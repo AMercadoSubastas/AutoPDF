@@ -68,8 +68,14 @@ descargar_archivo_drive(excel_file_id, excel_path)
 mes_actual = datetime.now().strftime("%B").capitalize()
 output_pdf_path = f'recmanuales_{mes_actual}.pdf'
 
+# Cargar el archivo Excel y las columnas relevantes
 df = pd.read_excel(excel_path)
+nombres_excel = df['Nombre Completo'].tolist()
+print(nombres_excel)
 valores_columna_b = df['B'].tolist()
+
+# Crear un diccionario para relacionar nombres con valores
+nombre_valor_dict = dict(zip(nombres_excel, valores_columna_b))
 
 pdf_reader = PdfReader(pdf_path)
 pdf_writer = PdfWriter()
@@ -77,55 +83,104 @@ pdf_writer = PdfWriter()
 pdfmetrics.registerFont(TTFont('Roboto', roboto_font_path))
 pdfmetrics.registerFont(TTFont('Roboto-Black', roboto_black_font_path))
 
-def obtener_ubicacion_nombre(page_text, patron_nombre):
-    matches = list(re.finditer(patron_nombre, page_text))
+def extraer_nombres_con_espacios(page_text):
+    # Actualizar la expresión regular para incluir caracteres acentuados
+    patron = r"A\s*C\s*L\s*A\s*R\s*A\s*C\s*I\s*Ó\s*N\s*:\s*([\w\sÁÉÍÓÚÑáéíóúñ,]+)\s*D\s*N\s*I"
+    matches = re.findall(patron, page_text)
+    nombres_formateados = []
+    
     if matches:
-        for match in matches:
-            nombre = match.group()
-            print(f"Nombre encontrado: {nombre} en la posición {match.start()}-{match.end()}")
+        for nombre in matches:
+            # Limpiar los espacios extra y dividir en partes
+            nombre_limpio = ''.join(nombre.split())
+            partes = nombre_limpio.split(',')
+            if len(partes) == 2:
+                apellido = partes[0].strip()
+                nombre_completo = ' '.join(partes[1].split())
+                
+                # Insertar espacio entre mayúsculas consecutivas que no tienen espacio
+                apellido = re.sub(r'(?<=[a-záéíóúñ])(?=[A-ZÁÉÍÓÚÑ][a-záéíóúñ])', ' ', apellido)
+                
+                # Insertar espacio entre una letra minúscula seguida de una letra mayúscula
+                nombre_completo = re.sub(r'(?<=[a-záéíóúñ])(?=[A-ZÁÉÍÓÚÑ])', ' ', nombre_completo)
+                
+                nombres_formateados.append(f"{apellido}, {nombre_completo}")
+    
+    return nombres_formateados
+
+# Contar cuántas veces aparece la palabra "pesos" en el PDF
+conteo_palabra_pesos = 0
+nombres_en_paginas = {}
 
 for page_num in range(len(pdf_reader.pages)):
     page = pdf_reader.pages[page_num]
     page_text = page.extract_text()
     if page_text:
-        patron_nombre = r"[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+,[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:[a-záéíóúñ]*)"
-        obtener_ubicacion_nombre(page_text, patron_nombre)
+        conteo_palabra_pesos += page_text.lower().count("p e s o s")
+        nombres = extraer_nombres_con_espacios(page_text)
+        if nombres:
+            nombres_en_paginas[f"Página {page_num + 1}"] = nombres
 
-def agregar_texto_a_pdf(page, page_num, texto, texto_en_palabras, ultima_pagina=False):
+print(f"La palabra 'pesos' aparece {conteo_palabra_pesos} veces en el PDF.")
+for pagina, nombres in nombres_en_paginas.items():
+    for nombre in nombres:
+        # Imprimir los nombres para ver exactamente cómo se comparan
+        print(f"Nombre extraído: '{nombre}'")
+        
+        if nombre in nombre_valor_dict:
+            valor = nombre_valor_dict[nombre]
+            print(f"{pagina}: {nombre} - Valor: {valor}")
+        else:
+            # Si el nombre no se encuentra, imprimir un mensaje de depuración
+            print(f"Nombre no encontrado en el Excel: '{nombre}'")
+
+def agregar_texto_a_pdf(page, texto, texto_en_palabras, ultima_pagina=False):
     packet = io.BytesIO()
     can = canvas.Canvas(packet, pagesize=letter)
     can.setFont("Roboto-Black", 10)
     
+    # Ajustar las coordenadas según si es la última página o no
     if ultima_pagina:
         x, y = 135, 300
-        can.drawString(x, y, f"{texto}")
-        x_palabras, y_palabras = 80, 510  # Mover las palabras más a la izquierda
+        x_palabras, y_palabras = 85, 510  # Mover las palabras más a la izquierda
     else:
         x, y = 135, 267
-        can.drawString(x, y, f"{texto}")
-        x_palabras, y_palabras = 100, 475  # Mover las palabras más a la izquierda
-        
+        x_palabras, y_palabras = 85, 475   # Mover las palabras más a la izquierda
+    
+    can.drawString(x, y, f"{texto}")
     can.setFont("Roboto", 10)
-    can.drawString(x_palabras, y_palabras, f"{texto_en_palabras}")
-    can.save()
+    
+    palabras = texto_en_palabras.split()
+    
+    if len(palabras) >= 11:
+        primera_linea = " ".join(palabras[:11])
+        segunda_linea = " ".join(palabras[11:])
+        can.drawString(x_palabras, y_palabras, primera_linea)
+        can.drawString(x_palabras, y_palabras - 36, segunda_linea)  # Mover la segunda línea hacia abajo
+    else:
+        can.drawString(x_palabras, y_palabras, texto_en_palabras)
 
+    can.save()
     packet.seek(0)
     new_pdf = PdfReader(packet)
     page.merge_page(new_pdf.pages[0])
     pdf_writer.add_page(page)
 
+# Iterar sobre las páginas y nombres, y agregar el texto al PDF
 for page_num in range(len(pdf_reader.pages)):
     page = pdf_reader.pages[page_num]
     ultima_pagina = (page_num == len(pdf_reader.pages) - 1)
+    nombres = nombres_en_paginas.get(f"Página {page_num + 1}", [])
     
-    if page_num < len(valores_columna_b):
-        valor = valores_columna_b[page_num]
-        texto_reemplazo = f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-        parte_entera = int(valor)
-        centavos = int(round((valor - parte_entera) * 100))
-        texto_reemplazo_en_palabras = f"{num2words(parte_entera, lang='es').capitalize()} con {centavos:02d}/100 centavos"
-        
-        agregar_texto_a_pdf(page, page_num, texto_reemplazo, texto_reemplazo_en_palabras, ultima_pagina=ultima_pagina)
+    if nombres:
+        for nombre in nombres:
+            if nombre in nombre_valor_dict:
+                valor = nombre_valor_dict[nombre]
+                texto_reemplazo = f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                parte_entera = int(valor)
+                centavos = int(round((valor - parte_entera) * 100))
+                texto_reemplazo_en_palabras = f"{num2words(parte_entera, lang='es').capitalize()} con {centavos:02d}/100 centavos"
+                agregar_texto_a_pdf(page, texto_reemplazo, texto_reemplazo_en_palabras, ultima_pagina=ultima_pagina)
     else:
         pdf_writer.add_page(page)
 
@@ -160,9 +215,7 @@ def compartir_archivo_drive(file_id, user_email):
             'emailAddress': user_email
         }
         service.permissions().create(
-            fileId=file_id,
-            body=user_permission,
-            fields='id'
+            fileId=file_id, body=user_permission, fields='id'
         ).execute()
         print(f"Archivo compartido exitosamente con {user_email}")
     except HttpError as error:
